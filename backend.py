@@ -134,25 +134,34 @@ def _budget(kind, p):
     return t * (2 if kind in ("tls", "http") else 1)
 
 
-def run_probe(kind, p):
-    """Exécute une sonde. Lève netlib.SondeError (résultat négatif lisible) ou Refus."""
-    p = p or {}
+def valider_probe(kind, p):
+    """Refus AVANT de lancer quoi que ce soit : type inconnu, réglages trop longs."""
     if kind not in KINDS:
         raise Refus(404, "sonde inconnue : %s" % kind)
-    duree = _budget(kind, p)
+    duree = _budget(kind, p or {})
     if duree > BUDGET_S:
         raise Refus(400, "réglages trop longs : jusqu'à %d s dans le pire cas, %d s au plus. "
                          "Réduisez le nombre d'essais ou le délai." % (duree, BUDGET_S))
+
+
+def run_probe(kind, p, progres=None, arret=None):
+    """Exécute une sonde. Lève netlib.SondeError (résultat négatif lisible) ou Refus.
+    `progres` / `arret` ne servent qu'aux sondes qui ont des étapes (ping, traceroute, TCP,
+    multicast, balayage) ; TLS, HTTP et DNS sont d'un seul tenant."""
+    p = p or {}
+    valider_probe(kind, p)
     cible = p.get("target")
     if kind == "ping":
         return netlib.ping(cible, count=p.get("count", 4), timeout=p.get("timeout", 1.0),
-                           intervalle=p.get("interval", 0.25), charge=p.get("size", 32))
+                           intervalle=p.get("interval", 0.25), charge=p.get("size", 32),
+                           progres=progres, arret=arret)
     if kind == "traceroute":
         return netlib.traceroute(cible, max_hops=p.get("max_hops", 20),
                                  timeout=p.get("timeout", 1.5),
-                                 essais_par_saut=p.get("tries", 2))
+                                 essais_par_saut=p.get("tries", 2), progres=progres, arret=arret)
     if kind == "tcp":
-        return netlib.tcp(cible, _ports(p.get("ports")), timeout=p.get("timeout", 2.0))
+        return netlib.tcp(cible, _ports(p.get("ports")), timeout=p.get("timeout", 2.0),
+                          progres=progres)
     if kind == "tls":
         return netlib.tls(cible, port=p.get("port", 443), timeout=p.get("timeout", 5.0),
                           sni=(str(p.get("sni") or "").strip() or None))
@@ -167,10 +176,11 @@ def run_probe(kind, p):
     if kind == "multicast":
         return netlib.multicast(p.get("group"), p.get("port", 5004),
                                 secondes=p.get("seconds", 5.0),
-                                interface=(str(p.get("interface") or "").strip() or None))
+                                interface=(str(p.get("interface") or "").strip() or None),
+                                progres=progres, arret=arret)
     if kind == "scan":
         return netlib.balayage(p.get("cidr"), ports=_ports(p.get("ports")),
-                               timeout=p.get("timeout", 1.0))
+                               timeout=p.get("timeout", 1.0), progres=progres, arret=arret)
     raise Refus(404, "sonde inconnue : %s" % kind)
 
 
@@ -250,28 +260,97 @@ def _libelle(kind, p):
     return str(p.get("target") or "")
 
 
+# ── Tâches : un test ponctuel tourne en FOND, et la page relit son avancement ─────────────
+# Plutôt qu'une requête qui tient jusqu'à 120 s puis rend tout d'un coup : le POST rend un
+# numéro de tâche, la page interroge `jobs/<id>?since=n` et affiche chaque paquet, saut, port ou
+# hôte dès qu'il est connu. Interroger plutôt que diffuser (flux HTTP) : rien à craindre d'un
+# proxy qui met en tampon, et le test continue — puis rejoint l'historique — si l'opérateur
+# change d'onglet ou ferme la page.
+JOBS_GARDE_S = 600          # une tâche terminée reste lisible 10 min
+JOBS_MAX = 100
+EVENTS_MAX = 2000           # étapes conservées par tâche (un /22 peut répondre en masse)
+
+
+def _jobs():
+    rt = _RUNTIME
+    if not hasattr(rt, "jobs"):
+        rt.jobs, rt.jobs_lock = {}, threading.Lock()
+    return rt.jobs, rt.jobs_lock
+
+
+def _menage(jobs):
+    """Appelé sous verrou : oublie les tâches terminées depuis longtemps, puis les plus vieilles."""
+    now = time.time()
+    for jid in [j for j, x in jobs.items() if x["status"] == "done"
+                and now - (x.get("finished_at") or now) > JOBS_GARDE_S]:
+        jobs.pop(jid, None)
+    finis = sorted((x for x in jobs.values() if x["status"] == "done"), key=lambda x: x["at"])
+    while len(jobs) > JOBS_MAX and finis:
+        jobs.pop(finis.pop(0)["id"], None)
+
+
 def _probe(kind, p, ctx):
+    try:
+        valider_probe(kind, p)
+    except Refus as e:
+        return e.status, {"error": str(e)}
     sem = _sem_scan if kind == "scan" else _sem_mcast if kind == "multicast" else _sem_general
     if not sem.acquire(blocking=False):
         quoi = {"scan": "un balayage", "multicast": "une écoute multicast"}.get(kind, "4 tests")
         return 429, {"error": "%s déjà en cours — réessayez dans un instant." % quoi}
-    t0 = time.time()
+    user = ctx.user or {}
+    job = {"id": uuid.uuid4().hex[:12], "kind": kind, "label": _libelle(kind, p), "params": p,
+           "user": user.get("username") or "", "at": time.time(), "status": "running",
+           "events": [], "progress": None, "entry": None, "finished_at": None,
+           "cancel": threading.Event()}
+    jobs, lock = _jobs()
+    with lock:
+        _menage(jobs)
+        jobs[job["id"]] = job
+
+    def progres(evt):
+        with lock:
+            if evt.get("type") in ("progress", "tick"):
+                job["progress"] = evt               # un état, pas une suite : on garde le dernier
+            elif len(job["events"]) < EVENTS_MAX:
+                job["events"].append(evt)
+
+    threading.Thread(target=_tache, args=(job, p, ctx, sem, progres), daemon=True,
+                     name="net_tests-test").start()
+    return {"job": job["id"], "kind": kind, "label": job["label"]}
+
+
+def _tache(job, p, ctx, sem, progres):
+    kind = job["kind"]
     try:
-        res = run_probe(kind, p)
+        res = run_probe(kind, p, progres=progres, arret=job["cancel"])
         ok, resume = verdict(kind, res, p)
+        if res.get("cancelled"):
+            resume += " — interrompu"
         erreur = None
-    except netlib.SondeError as e:
+    except (netlib.SondeError, Refus) as e:
         res, ok, resume, erreur = None, False, str(e), str(e)
-    except Refus as e:
-        return e.status, {"error": str(e)}
+    except Exception as e:                          # noqa: BLE001 — la tâche doit toujours finir
+        res, ok, resume, erreur = None, False, "erreur interne : %s" % e, str(e)
     finally:
         sem.release()
-    entree = {"kind": kind, "label": _libelle(kind, p), "params": p, "ok": ok,
+    entree = {"kind": kind, "label": job["label"], "params": p, "ok": ok,
               "summary": resume, "error": erreur, "result": res,
-              "at": t0, "seconds": round(time.time() - t0, 2),
-              "user": (ctx.user or {}).get("username") or ""}
+              "at": job["at"], "seconds": round(time.time() - job["at"], 2), "user": job["user"]}
     hid = _historiser(ctx, entree)
-    return {"id": hid, **entree}
+    jobs, lock = _jobs()
+    with lock:
+        job["entry"] = {"id": hid, **entree}
+        job["status"] = "done"
+        job["finished_at"] = time.time()
+
+
+def _job_vue(job, since=0):
+    return {"id": job["id"], "kind": job["kind"], "label": job["label"], "user": job["user"],
+            "at": job["at"], "status": job["status"], "progress": job["progress"],
+            "cancelling": job["cancel"].is_set() and job["status"] == "running",
+            "events": job["events"][since:], "next": len(job["events"]),
+            "entry": job["entry"]}
 
 
 def _historiser(ctx, entree):
@@ -686,6 +765,26 @@ def _api(parts, method, payload, ctx):
 
     if len(parts) == 2 and parts[0] == "probe" and method == "POST":
         return _probe(parts[1], payload, ctx)
+
+    if parts == ["jobs"] and method == "GET":
+        jobs, lock = _jobs()
+        with lock:
+            return {"jobs": [_job_vue(j, since=len(j["events"])) for j in jobs.values()
+                             if j["status"] == "running"]}
+    if len(parts) >= 2 and parts[0] == "jobs":
+        jobs, lock = _jobs()
+        with lock:
+            job = jobs.get(parts[1])
+            if not job:
+                return 404, {"error": "tâche inconnue ou expirée — le résultat est dans l'historique"}
+            if len(parts) == 2 and method == "GET":
+                return _job_vue(job, since=max(0, _num(payload.get("since"), 0, True)))
+        if len(parts) == 3 and parts[2] == "cancel" and method == "POST":
+            u = ctx.user or {}
+            if job["user"] != (u.get("username") or "") and u.get("role") != "admin":
+                return 403, {"error": "seul l'auteur du test (ou un administrateur) peut l'arrêter"}
+            job["cancel"].set()
+            return {"ok": True}
 
     if parts == ["history"]:
         if method == "GET":

@@ -110,3 +110,14 @@
     .nt-table td { display: block; padding: 3px 8px; }
     .nt-table tbody tr { display: block; padding: 6px 0; }
 }
+
+/* ── Test en cours ── */
+.nt-live { display: inline-flex; align-items: center; gap: 8px; color: var(--text); }
+.nt-spin {
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--accent); animation: nt-tourne .8s linear infinite;
+}
+@keyframes nt-tourne { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .nt-spin { animation: none; } }
+.nt-progress { height: 4px; background: var(--border-soft); border-radius: 2px; overflow: hidden; margin: 0 0 12px; }
+.nt-progress > i { display: block; height: 100%; background: var(--accent); transition: width .3s; }

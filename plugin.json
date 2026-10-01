@@ -2,7 +2,7 @@
   "license": "GPL-3.0-or-later",
   "type": "net_tests",
   "label": "Tests réseau",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "runtime": "inprocess",
   "description": "Diagnostic réseau depuis le serveur lui-même : ping, traceroute, ports TCP, certificat TLS, HTTP, DNS (résolveur au choix), écoute multicast et balayage de plage. Cibles proposées depuis les inventaires Pilotage de switch et Parc NMOS. Historique des tests, et surveillance planifiée avec alerte par e-mail.",
   "badge": {
@@ -36,24 +36,61 @@
     {
       "id": "monitor.manage",
       "label": "Gérer la surveillance",
-      "default_roles": ["operator"],
+      "default_roles": [
+        "operator"
+      ],
       "description": "Créer, modifier, suspendre ou supprimer un contrôle planifié."
     },
     {
       "id": "history.clear",
       "label": "Vider l'historique des tests",
-      "default_roles": ["operator"]
+      "default_roles": [
+        "operator"
+      ]
     }
   ],
   "acl": {
     "routes": [
-      {"method": "POST", "path": "probe/scan", "perm": "scan"},
-      {"method": "POST", "path": "probe/multicast", "perm": "multicast"},
-      {"method": "POST", "path": "probe/{kind}", "perm": null},
-      {"method": "POST", "path": "monitors/{monitor}/run", "perm": null},
-      {"method": "*", "path": "monitors/**", "perm": "monitor.manage"},
-      {"method": "DELETE", "path": "history/**", "perm": "history.clear"},
-      {"method": "*", "path": "**", "perm": "monitor.manage"}
+      {
+        "method": "POST",
+        "path": "probe/scan",
+        "perm": "scan"
+      },
+      {
+        "method": "POST",
+        "path": "probe/multicast",
+        "perm": "multicast"
+      },
+      {
+        "method": "POST",
+        "path": "probe/{kind}",
+        "perm": null
+      },
+      {
+        "method": "POST",
+        "path": "jobs/{job}/cancel",
+        "perm": null
+      },
+      {
+        "method": "POST",
+        "path": "monitors/{monitor}/run",
+        "perm": null
+      },
+      {
+        "method": "*",
+        "path": "monitors/**",
+        "perm": "monitor.manage"
+      },
+      {
+        "method": "DELETE",
+        "path": "history/**",
+        "perm": "history.clear"
+      },
+      {
+        "method": "*",
+        "path": "**",
+        "perm": "monitor.manage"
+      }
     ]
   }
 }

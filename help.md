@@ -28,6 +28,20 @@ sur cette instance) ; la saisie libre reste toujours possible.
 Chaque test est borné : au-delà de **120 s dans le pire cas** (nombre d'essais × délai), il est
 refusé avant de partir, avec le calcul.
 
+### Résultats au fil de l'eau
+
+Le résultat se construit **pendant** le test : chaque paquet du ping, chaque saut du traceroute,
+chaque port, chaque hôte trouvé par le balayage, et le débit multicast seconde par seconde
+s'affichent dès qu'ils sont connus, avec une barre d'avancement. DNS, HTTP et TLS sont des
+opérations uniques : leur résultat arrive d'un coup.
+
+**Arrêter** interrompt le test et garde ce qui a déjà été mesuré (le résumé porte « interrompu »).
+Le balayage laisse finir les adresses déjà en cours d'examen, d'où quelques secondes de délai.
+Seul l'auteur du test, ou un administrateur, peut l'arrêter.
+
+Le test tourne **sur le serveur** : changer d'onglet ou fermer la page ne l'interrompt pas, et son
+résultat rejoint l'historique.
+
 ### ⚠ Multicast : rejoindre n'est pas observer
 
 L'écoute envoie un **IGMP join** réel : le switch livre alors le flux au serveur pendant toute

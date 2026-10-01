@@ -14,6 +14,7 @@ window.BTTools.net_tests = (function () {
     let dernier = null;              // dernier résultat ponctuel (pour « Surveiller ce test »)
     let monEdit = null;              // contrôle en cours d'édition (null = création)
     let timer = null;
+    let suivi = null;                // tâche en cours : { id, kind, since, events, progress, t0, stop }
     let ouverts = new Set();         // lignes d'historique dépliées
 
     const esc = (window.BT && BT.esc) || ((s) => String(s == null ? "" : s)
@@ -161,7 +162,7 @@ window.BTTools.net_tests = (function () {
         $("#nt-warn").hidden = !w;
         $("#nt-warn").innerHTML = w || "";
         const ok = permis(kind);
-        $("#nt-run").disabled = !ok;
+        $("#nt-run").disabled = !ok || !!suivi;
         $("#nt-denied").hidden = ok;
         $("#nt-denied").textContent = ok ? "" : "Ce test est réservé aux administrateurs.";
     }
@@ -178,23 +179,126 @@ window.BTTools.net_tests = (function () {
     }
 
     // ── Lancer un test ──────────────────────────────────────────
+    // Le serveur rend un numéro de tâche ; on relit son avancement et on affiche chaque étape
+    // dès qu'elle est connue. Le test vit côté serveur : quitter la page ne l'interrompt pas,
+    // son résultat rejoint l'historique.
     async function lancer(ev) {
         ev.preventDefault();
+        if (suivi) return;
         const p = lireChamps($("#nt-form"), kind);
         $("#nt-run").disabled = true;
-        $("#nt-busy").hidden = false;
-        $("#nt-result").hidden = true;
         try {
             const r = await CTX.api("probe/" + kind, { body: p });
-            dernier = r;
-            $("#nt-result").innerHTML = rendreResultat(r, true);
-            $("#nt-result").hidden = false;
+            suivre(r.job, kind, r.label);
         } catch (e) {
-            if (!e.rightsShown) toast(e.message, "error");
-        } finally {
             $("#nt-run").disabled = !permis(kind);
-            $("#nt-busy").hidden = true;
+            if (!e.rightsShown) toast(e.message, "error");
         }
+    }
+
+    function suivre(id, k, label) {
+        suivi = { id, kind: k, label, since: 0, events: [], progress: null, t0: Date.now(), stop: false, cancelling: false };
+        $("#nt-result").hidden = false;
+        $("#nt-result").innerHTML = rendreLive(suivi);
+        const tour = async () => {
+            const s = suivi;
+            if (!s || s.id !== id || !EL) return;
+            let r;
+            try { r = await CTX.api("jobs/" + id + "?since=" + s.since); }
+            catch (e) {
+                fin(); toast(e.message, "error"); return;
+            }
+            if (!suivi || suivi.id !== id || !EL) return;
+            s.events = s.events.concat(r.events || []);
+            s.since = r.next;
+            s.progress = r.progress;
+            s.cancelling = r.cancelling;
+            if (r.status === "done" && r.entry) {
+                fin();
+                dernier = r.entry;
+                $("#nt-result").innerHTML = rendreResultat(r.entry, true);
+                return;
+            }
+            $("#nt-result").innerHTML = rendreLive(s);
+            s.timer = setTimeout(tour, 400);
+        };
+        suivi.timer = setTimeout(tour, 250);
+    }
+
+    function fin() {
+        if (suivi && suivi.timer) clearTimeout(suivi.timer);
+        suivi = null;
+        if (!EL) return;
+        $("#nt-run").disabled = !permis(kind);
+    }
+
+    async function arreter() {
+        if (!suivi) return;
+        try { await CTX.api("jobs/" + suivi.id + "/cancel", { body: {} }); suivi.cancelling = true; }
+        catch (e) { if (!e.rightsShown) toast(e.message, "error"); }
+    }
+
+    // Vue partielle : on reconstruit, à partir des étapes reçues, un résultat de même forme que
+    // le résultat final — les mêmes rendus servent aux deux, l'écran ne « saute » pas à la fin.
+    function partiel(s) {
+        const ev = s.events, debut = ev.find(e => e.type === "start") || {};
+        const de = (t) => ev.filter(e => e.type === t);
+        const sec = (Date.now() - s.t0) / 1000;
+        if (s.kind === "ping") {
+            const att = de("attempt"), rtt = att.filter(a => a.ok).map(a => a.ms);
+            const moy = rtt.length ? rtt.reduce((x, y) => x + y, 0) / rtt.length : null;
+            return { avance: [att.length, debut.count || 0], r: { ip: debut.ip || "…", attempts: att, sent: att.length, received: rtt.length,
+                loss_pct: att.length ? Math.round(1000 * (att.length - rtt.length) / att.length) / 10 : 0,
+                min_ms: rtt.length ? Math.min(...rtt) : null, max_ms: rtt.length ? Math.max(...rtt) : null, avg_ms: moy,
+                jitter_ms: rtt.length > 1 ? Math.sqrt(rtt.reduce((a, x) => a + (x - moy) ** 2, 0) / rtt.length) : null } };
+        }
+        if (s.kind === "traceroute") {
+            const h = de("hop");
+            return { avance: [h.length, debut.max_hops || 0], r: { hops: h, reached: true, _live: true } };
+        }
+        if (s.kind === "tcp") {
+            const ps = de("port").sort((a, b) => a.port - b.port);
+            return { avance: [ps.length, (debut.ports || []).length], r: { ip: debut.ip || "…", hostname: debut.hostname, ports: ps } };
+        }
+        if (s.kind === "scan") {
+            const pr = s.progress || {}, h = de("host").sort((a, b) => a.ip.split(".").map(Number).reduce((x, y) => x * 256 + y, 0)
+                - b.ip.split(".").map(Number).reduce((x, y) => x * 256 + y, 0));
+            return { avance: [pr.done || 0, pr.total || debut.total || 0], r: { cidr: debut.cidr || "…", alive: h.length, scanned: pr.done || 0,
+                total: pr.total || debut.total || 0, seconds: Math.round(sec * 10) / 10, ports_tested: debut.ports || [], hosts: h, _live: true } };
+        }
+        if (s.kind === "multicast") {
+            const t = s.progress || {};
+            return { avance: [t.t || 0, t.seconds || 0], tick: t };
+        }
+        return { avance: null };
+    }
+
+    function rendreLive(s) {
+        const lbl = KINDS[s.kind] ? KINDS[s.kind].label : s.kind;
+        const p = partiel(s);
+        const sec = ((Date.now() - s.t0) / 1000).toFixed(1);
+        let barre = "";
+        if (p.avance && p.avance[1]) {
+            const pc = Math.min(100, Math.round(100 * p.avance[0] / p.avance[1]));
+            barre = `<div class="nt-progress" role="progressbar" aria-valuenow="${pc}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pc}%"></i></div>`;
+        }
+        const etat = s.cancelling ? "Arrêt demandé…" : "En cours…";
+        const tete = `<div class="nt-verdict"><b class="nt-live"><span class="nt-spin" aria-hidden="true"></span>${esc(etat)}</b>` +
+            `<span class="meta">${esc(lbl)} · ${esc(s.label || "")} · ${esc(sec)} s</span>` +
+            `<button class="btn btn-sm" type="button" data-act="stop" ${s.cancelling ? "disabled" : ""}>Arrêter</button></div>`;
+        let corps = "";
+        try {
+            if (s.kind === "multicast") {
+                const t = p.tick || {};
+                corps = `<div class="nt-stats">${stat("Écoute", (t.t || 0) + " / " + (t.seconds || "…") + " s")}${stat("Paquets", t.packets || 0)}` +
+                    `${stat("Débit (dernière seconde)", (t.mbps || 0) + " Mb/s")}${stat("Paquets/s", t.pps || 0)}${stat("Sources", t.sources || 0)}</div>`;
+            } else if (p.r) {
+                corps = RENDUS[s.kind](p.r);
+            } else {
+                corps = '<p class="meta">Ce test est d\'un seul tenant : le résultat s\'affichera d\'un coup.</p>';
+            }
+        } catch (e) { corps = ""; }
+        return tete + barre + corps;
     }
 
     function rendreResultat(h, actions) {
@@ -225,7 +329,7 @@ window.BTTools.net_tests = (function () {
             return '<table class="nt-table"><thead><tr><th>Saut</th><th>Adresse</th><th>Nom</th><th>Temps</th></tr></thead><tbody>' +
                 r.hops.map(h => `<tr><td class="num">${h.ttl}</td><td class="num">${esc(h.ip || "*")}</td>` +
                     `<td>${esc(h.hostname || "")}</td><td class="num">${h.ms.map(x => x == null ? "*" : esc(ms(x))).join(" · ")}</td></tr>`).join("") +
-                "</tbody></table>" + (r.reached ? "" : '<p class="meta">Un saut muet (« * ») n\'est pas une panne : beaucoup de routeurs ne répondent pas aux TTL expirés.</p>');
+                "</tbody></table>" + (r.reached || r._live ? "" : '<p class="meta">Un saut muet (« * ») n\'est pas une panne : beaucoup de routeurs ne répondent pas aux TTL expirés.</p>');
         },
         tcp(r) {
             const etat = { open: ["nt-ok", "ouvert"], closed: ["nt-ko", "refusé — l'hôte répond, rien n'écoute"],
@@ -271,11 +375,14 @@ window.BTTools.net_tests = (function () {
                 (r.bridged ? '<p class="nt-warn">Mesure prise depuis un conteneur ponté : le multicast du LAN n\'y parvient pas, l\'absence de paquets ne prouve rien.</p>' : "");
         },
         scan(r) {
-            return `<div class="nt-stats">${stat("Plage", r.cidr)}${stat("Vivants", r.alive + " / " + r.scanned)}${stat("Durée", r.seconds + " s")}` +
+            // En cours, « vivants / examinées » se lirait « 1 sur 1 » : on sépare les deux.
+            const compte = r._live ? stat("Vivants", r.alive) + stat("Examinées", r.scanned + " / " + r.total)
+                : stat("Vivants", r.alive + " / " + r.scanned) + (r.cancelled ? stat("Plage complète", r.total) : "");
+            return `<div class="nt-stats">${stat("Plage", r.cidr)}${compte}${stat("Durée", r.seconds + " s")}` +
                 `${r.ports_tested.length ? stat("Ports testés", r.ports_tested.join(" ")) : ""}</div>` +
                 (r.hosts.length ? '<table class="nt-table"><thead><tr><th>Adresse</th><th>Nom</th><th>Ping</th><th>Ports ouverts</th></tr></thead><tbody>' +
                     r.hosts.map(x => `<tr><td class="num">${esc(x.ip)}</td><td>${esc(x.hostname || "")}</td><td class="num">${x.ms == null ? '<span class="nt-muted">muet</span>' : esc(ms(x.ms))}</td>` +
-                        `<td class="num">${esc(x.ports.join(" "))}</td></tr>`).join("") + "</tbody></table>" : '<p class="meta">Personne n\'a répondu.</p>');
+                        `<td class="num">${esc(x.ports.join(" "))}</td></tr>`).join("") + "</tbody></table>" : `<p class="meta">${r._live ? "Aucun hôte trouvé pour l'instant." : "Personne n'a répondu."}</p>`);
         },
     };
 
@@ -424,6 +531,7 @@ window.BTTools.net_tests = (function () {
                 formMonitor({ kind: dernier.kind, params: dernier.params, name: "", interval_s: 60, fail_threshold: 3, mail: false, mail_to: "" });
                 return;
             }
+            if (a === "stop") { arreter(); return; }
             if (a === "mon-save") { sauverMonitor(); return; }
             if (a === "mon-cancel") { $("#nt-monform").hidden = true; monEdit = null; return; }
             const tr = act.closest("tr[data-id]");
@@ -469,6 +577,8 @@ window.BTTools.net_tests = (function () {
     }
 
     function unmount() {
+        if (suivi && suivi.timer) clearTimeout(suivi.timer);
+        suivi = null;
         if (timer) clearInterval(timer);
         timer = null;
         if (EL) EL.removeEventListener("click", onClick);

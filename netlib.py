@@ -24,7 +24,7 @@ import ssl
 import struct
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as _Delai
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as _Delai
 
 # ── Bornes. Elles ne sont pas décoratives : ce service tourne sur le serveur, et une sonde sans
 # plafond est un moyen de le saturer ou d'inonder un tiers depuis notre adresse.
@@ -163,6 +163,20 @@ def _nouvel_ident():
         return _ident_suivant[0]
 
 
+def _signaler(progres, evt):
+    """Remonte une étape à l'appelant. Un rappel qui échoue ne doit jamais casser la mesure."""
+    if progres is None:
+        return
+    try:
+        progres(evt)
+    except Exception:                       # noqa: BLE001
+        pass
+
+
+def _arrete(arret):
+    return arret is not None and arret.is_set()
+
+
 def _socket_icmp():
     try:
         return socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
@@ -172,12 +186,15 @@ def _socket_icmp():
 
 
 # ─── Ping ───────────────────────────────────────────────────────────────────
-def ping(cible, count=4, timeout=1.0, intervalle=0.25, charge=32):
+def ping(cible, count=4, timeout=1.0, intervalle=0.25, charge=32, progres=None, arret=None):
     """Aller-retour ICMP, paquet par paquet.
 
     On rend CHAQUE tentative, pas seulement la moyenne : une perte isolée au milieu d'une série
     régulière et une série qui se dégrade racontent deux pannes différentes, et la moyenne les
-    rend identiques."""
+    rend identiques.
+
+    `progres(evt)` reçoit chaque tentative dès qu'elle est jugée ; `arret` (threading.Event)
+    interrompt la série entre deux paquets — le résultat porte alors `cancelled`."""
     ip, nom = resoudre(cible)
     count = _borne(count, 4, 1, MAX_COUNT)
     timeout = _borne(timeout, 1.0, 0.1, MAX_TIMEOUT, entier=False)
@@ -186,16 +203,25 @@ def ping(cible, count=4, timeout=1.0, intervalle=0.25, charge=32):
     ident = _nouvel_ident()
     s = _socket_icmp()
     essais = []
+    interrompu = False
+    _signaler(progres, {"type": "start", "ip": ip, "hostname": nom, "count": count})
     try:
         s.settimeout(timeout)
         for seq in range(1, count + 1):
             if seq > 1 and intervalle:
-                time.sleep(intervalle)
+                if arret is not None:
+                    arret.wait(intervalle)
+                else:
+                    time.sleep(intervalle)
+            if _arrete(arret):
+                interrompu = True
+                break
             t0 = time.time()
             try:
                 s.sendto(_paquet_echo(ident, seq, charge), (ip, 0))
             except OSError as e:
                 essais.append({"seq": seq, "ok": False, "error": str(e)})
+                _signaler(progres, {"type": "attempt", **essais[-1]})
                 continue
             fin = t0 + timeout
             recu = None
@@ -218,11 +244,12 @@ def ping(cible, count=4, timeout=1.0, intervalle=0.25, charge=32):
                             "error": "injoignable (code ICMP %d)" % code}
                     break
             essais.append(recu or {"seq": seq, "ok": False, "error": "délai dépassé"})
+            _signaler(progres, {"type": "attempt", **essais[-1]})
     finally:
         s.close()
     rtt = [e["ms"] for e in essais if e.get("ok")]
     return {
-        "target": cible, "ip": ip, "hostname": nom,
+        "target": cible, "ip": ip, "hostname": nom, "cancelled": interrompu,
         "sent": len(essais), "received": len(rtt),
         "loss_pct": round(100.0 * (len(essais) - len(rtt)) / max(1, len(essais)), 1),
         "min_ms": min(rtt) if rtt else None,
@@ -238,7 +265,7 @@ def ping(cible, count=4, timeout=1.0, intervalle=0.25, charge=32):
 
 
 # ─── Traceroute ─────────────────────────────────────────────────────────────
-def traceroute(cible, max_hops=20, timeout=1.5, essais_par_saut=2):
+def traceroute(cible, max_hops=20, timeout=1.5, essais_par_saut=2, progres=None, arret=None):
     """Chemin aller, saut par saut, en ICMP echo à TTL croissant.
 
     ICMP plutôt qu'UDP : c'est ce que fait `tracert` sous Windows, et c'est ce qui passe le mieux
@@ -251,18 +278,25 @@ def traceroute(cible, max_hops=20, timeout=1.5, essais_par_saut=2):
     ident = _nouvel_ident()
     s = _socket_icmp()
     sauts, atteint, seq = [], False, 0
+    interrompu = False
+    _signaler(progres, {"type": "start", "ip": ip, "hostname": nom, "max_hops": max_hops})
     try:
         for ttl in range(1, max_hops + 1):
+            if _arrete(arret):
+                interrompu = True
+                break
             s.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
-            mesures, qui = [], None
+            mesures, qui, erreur = [], None, None
             for _ in range(essais_par_saut):
                 seq += 1
                 t0 = time.time()
                 try:
                     s.sendto(_paquet_echo(ident, seq, 32), (ip, 0))
                 except OSError as e:
+                    # L'erreur appartient au saut, pas à une ligne à part : l'ancien code
+                    # ajoutait ici une seconde entrée au même TTL, sans mesures.
                     mesures.append(None)
-                    sauts.append({"ttl": ttl, "error": str(e)})
+                    erreur = str(e)
                     continue
                 fin, vu = t0 + timeout, None
                 while time.time() < fin:
@@ -297,12 +331,14 @@ def traceroute(cible, max_hops=20, timeout=1.5, essais_par_saut=2):
                 "ms": [m for m in mesures],
                 "avg_ms": round(sum(x for x in mesures if x) / len([x for x in mesures if x]), 3)
                           if any(mesures) else None,
+                "error": erreur,
             })
+            _signaler(progres, {"type": "hop", **sauts[-1]})
             if atteint:
                 break
     finally:
         s.close()
-    return {"target": cible, "ip": ip, "hostname": nom, "reached": atteint,
+    return {"target": cible, "ip": ip, "hostname": nom, "reached": atteint, "cancelled": interrompu,
             "hops": sauts, "max_hops": max_hops}
 
 
@@ -325,7 +361,7 @@ def _nom_inverse(ip, delai=1.0):
 
 
 # ─── Port TCP ───────────────────────────────────────────────────────────────
-def tcp(cible, ports, timeout=2.0):
+def tcp(cible, ports, timeout=2.0, progres=None):
     """Ouverture d'un ou plusieurs ports TCP, avec le temps d'établissement.
 
     On distingue REFUSÉ (quelque chose répond « non », donc l'hôte est vivant et le chemin
@@ -365,8 +401,13 @@ def tcp(cible, ports, timeout=2.0):
         finally:
             s.close()
 
+    _signaler(progres, {"type": "start", "ip": ip, "hostname": nom, "ports": liste})
+    res = []
     with ThreadPoolExecutor(max_workers=min(16, len(liste))) as ex:
-        res = sorted(ex.map(un, liste), key=lambda d: d["port"])
+        for fut in as_completed([ex.submit(un, port) for port in liste]):
+            res.append(fut.result())
+            _signaler(progres, {"type": "port", **res[-1]})
+    res.sort(key=lambda d: d["port"])
     return {"target": cible, "ip": ip, "hostname": nom, "ports": res,
             "open": [r["port"] for r in res if r["state"] == "open"]}
 
@@ -493,7 +534,7 @@ def interfaces():
 
 
 # ─── Multicast ──────────────────────────────────────────────────────────────
-def multicast(groupe, port, secondes=5.0, interface=None):
+def multicast(groupe, port, secondes=5.0, interface=None, progres=None, arret=None):
     """Rejoint un groupe multicast et COMPTE ce qui arrive.
 
     ⚠ Rejoindre est un ACTE RÉSEAU, pas une observation passive : l'IGMP join fait livrer le
@@ -528,7 +569,7 @@ def multicast(groupe, port, secondes=5.0, interface=None):
         except OSError:
             pass
     mreq = struct.pack("4s4s", socket.inet_aton(g), socket.inet_aton(interface or "0.0.0.0"))
-    joint = False
+    joint, interrompu = False, False
     sources, paquets, octets = {}, 0, 0
     try:
         # Lié au GROUPE, pas à « toutes adresses » : sur l'hôte, d'autres programmes ont pu
@@ -539,8 +580,21 @@ def multicast(groupe, port, secondes=5.0, interface=None):
         joint = True
         fin = time.time() + secondes
         t0 = time.time()
+        # Un relevé par seconde : le débit se lit en direct, et c'est aussi là qu'on regarde si
+        # l'arrêt a été demandé — rester abonné au flux plus longtemps que voulu a un coût réel.
+        releve, deja = t0 + 1.0, (0, 0)
         while time.time() < fin:
-            r, _, _ = select.select([s], [], [], max(0.0, fin - time.time()))
+            maintenant = time.time()
+            if maintenant >= releve:
+                _signaler(progres, {"type": "tick", "t": round(maintenant - t0, 1),
+                                    "seconds": secondes, "packets": paquets, "bytes": octets,
+                                    "mbps": round((octets - deja[1]) * 8 / (maintenant - releve + 1.0) / 1e6, 3),
+                                    "pps": paquets - deja[0], "sources": len(sources)})
+                releve, deja = maintenant + 1.0, (paquets, octets)
+                if _arrete(arret):
+                    interrompu = True
+                    break
+            r, _, _ = select.select([s], [], [], max(0.0, min(fin, releve) - time.time()))
             if not r:
                 continue
             data, src = s.recvfrom(65535)
@@ -564,11 +618,11 @@ def multicast(groupe, port, secondes=5.0, interface=None):
             "pps": round(paquets / duree, 1),
             "mbps": round(octets * 8 / duree / 1e6, 3),
             "sources": sorted(sources.values(), key=lambda d: -d["packets"]),
-            "bridged": os.path.exists("/.dockerenv")}
+            "cancelled": interrompu, "bridged": os.path.exists("/.dockerenv")}
 
 
 # ─── Balayage de sous-réseau ────────────────────────────────────────────────
-def balayage(cidr, ports=None, timeout=1.0, parallele=64):
+def balayage(cidr, ports=None, timeout=1.0, parallele=64, progres=None, arret=None):
     """Qui répond sur une plage. ICMP d'abord, puis TCP si des ports sont demandés.
 
     Un hôte muet en ICMP n'est PAS forcément absent : beaucoup de systèmes filtrent l'écho par
@@ -597,6 +651,8 @@ def balayage(cidr, ports=None, timeout=1.0, parallele=64):
     parallele = _borne(parallele, 64, 1, 128)
 
     def un(ip):
+        if _arrete(arret):
+            return None                     # arrêt demandé : les adresses restantes sont sautées
         ip = str(ip)
         r = {"ip": ip, "alive": False, "ms": None, "ports": [], "hostname": None}
         p = ping(ip, count=1, timeout=timeout, intervalle=0)
@@ -613,10 +669,21 @@ def balayage(cidr, ports=None, timeout=1.0, parallele=64):
         return r
 
     t0 = time.time()
+    _signaler(progres, {"type": "start", "cidr": str(reseau), "total": len(hotes), "ports": liste})
+    res, fait = [], 0
     with ThreadPoolExecutor(max_workers=parallele) as ex:
-        res = list(ex.map(un, hotes))
+        for fut in as_completed([ex.submit(un, h) for h in hotes]):
+            r = fut.result()
+            if r is None:
+                continue
+            res.append(r)
+            fait += 1
+            _signaler(progres, {"type": "progress", "done": fait, "total": len(hotes)})
+            if r["alive"]:
+                _signaler(progres, {"type": "host", **r})
     vivants = [r for r in res if r["alive"]]
-    return {"cidr": str(reseau), "scanned": len(hotes), "alive": len(vivants),
+    return {"cidr": str(reseau), "scanned": len(res), "total": len(hotes), "alive": len(vivants),
+            "cancelled": len(res) < len(hotes),
             "seconds": round(time.time() - t0, 2),
             "ports_tested": liste,
             "hosts": sorted(vivants, key=lambda d: [int(x) for x in d["ip"].split(".")])}
