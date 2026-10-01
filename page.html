@@ -1,0 +1,58 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 BOBI SAS, France — Auteur : Cyril Mazouer, pour le compte de BOBI SAS -->
+<div class="nt">
+  <div class="nt-tabs" role="tablist">
+    <button class="btn nt-tab is-on" data-tab="tester" type="button">Tester</button>
+    <button class="btn nt-tab" data-tab="surveillance" type="button">Surveillance <span class="nt-pill" id="nt-mon-count" hidden></span></button>
+    <button class="btn nt-tab" data-tab="historique" type="button">Historique</button>
+  </div>
+
+  <!-- ── Tester ─────────────────────────────────────────────── -->
+  <section data-pane="tester">
+    <p class="meta nt-intro">Les tests partent <b>de ce serveur</b> : c'est son chemin vers la cible qui est mesuré, pas celui de votre poste.</p>
+    <div class="nt-kinds" id="nt-kinds" role="radiogroup" aria-label="Type de test"></div>
+    <form class="nt-form" id="nt-form" autocomplete="off">
+      <div class="nt-warn" id="nt-warn" hidden></div>
+      <div class="nt-fields" id="nt-fields"></div>
+      <div class="nt-actions">
+        <button class="btn btn-blue" id="nt-run" type="submit">Lancer</button>
+        <span class="meta" id="nt-busy" hidden>Test en cours…</span>
+        <span class="meta" id="nt-denied" hidden></span>
+      </div>
+    </form>
+    <div class="nt-result" id="nt-result" hidden></div>
+    <datalist id="nt-targets"></datalist>
+  </section>
+
+  <!-- ── Surveillance ───────────────────────────────────────── -->
+  <section data-pane="surveillance" hidden>
+    <div class="nt-bar">
+      <p class="meta">Contrôles planifiés, exécutés par le serveur même quand personne ne regarde. Une alerte part au <b>passage</b> en échec (après le nombre d'échecs consécutifs choisi) et au retour.</p>
+      <button class="btn btn-blue" id="nt-mon-new" type="button">Nouveau contrôle</button>
+    </div>
+    <div class="nt-monform" id="nt-monform" hidden></div>
+    <div class="empty-state" id="nt-mon-empty" hidden>
+      <div class="empty-state-title">Aucun contrôle</div>
+      <div class="empty-state-msg">Créez-en un ici, ou depuis le résultat d'un test : « Surveiller ce test ».</div>
+    </div>
+    <table class="nt-table" id="nt-mon-table" hidden>
+      <thead><tr><th></th><th>Contrôle</th><th>Test</th><th>Toutes les</th><th>Dernier résultat</th><th>Depuis</th><th>Tendance</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- ── Historique ─────────────────────────────────────────── -->
+  <section data-pane="historique" hidden>
+    <div class="nt-bar">
+      <select class="filter-select" id="nt-h-kind" aria-label="Filtrer par type"><option value="">Tous les tests</option></select>
+      <button class="btn btn-red btn-sm" id="nt-h-clear" type="button">Vider l'historique</button>
+    </div>
+    <div class="empty-state" id="nt-h-empty" hidden>
+      <div class="empty-state-title">Aucun test enregistré</div>
+    </div>
+    <table class="nt-table" id="nt-h-table" hidden>
+      <thead><tr><th></th><th>Quand</th><th>Test</th><th>Cible</th><th>Résultat</th><th>Par</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</div>

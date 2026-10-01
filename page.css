@@ -1,0 +1,112 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright (C) 2026 BOBI SAS, France — Auteur : Cyril Mazouer, pour le compte de BOBI SAS
+   Tests réseau — styles propres à l'outil (préfixe nt-). */
+
+.nt { --nt-ok: var(--status-running-fg, #2e9d58); --nt-ko: var(--status-stopped-fg, #d14343);
+      --nt-warn: var(--status-warning-fg, #b7791f); }
+
+.nt-tabs {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 16px; border-bottom: 1px solid var(--line, #e3e3e3); padding-bottom: 12px;
+}
+/* Une règle de classe qui pose `display` l'emporte sur l'attribut `hidden` du navigateur, à
+   spécificité égale : la pastille « 0 » restait affichée. Tout ce qui se masque par `hidden`
+   dans l'outil doit donc rester masqué, quelle que soit sa classe. */
+.nt [hidden] { display: none !important; }
+
+/* L'état actif doit survivre au survol : sur écran tactile, le « survol » colle au dernier
+   bouton touché, et la règle :hover du socle délavait l'onglet sélectionné. */
+.nt-tab.is-on, .nt-tab.is-on:hover, .nt-tab.is-on:focus { background: var(--accent, #2d6cdf); color: #fff; }
+.nt-pill {
+    display: inline-block; min-width: 1.4em; padding: 0 6px; margin-left: 4px;
+    border-radius: 999px; font-size: .8em; background: var(--nt-ko); color: #fff;
+}
+.nt-intro { margin: 0 0 12px; }
+
+/* Sélecteur de type : des boutons, pas un menu — on change souvent de test en dépannage. */
+.nt-kinds { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.nt-kind.is-on, .nt-kind.is-on:hover, .nt-kind.is-on:focus { background: var(--accent, #2d6cdf); color: #fff; }
+.nt-kind[disabled] { opacity: .45; cursor: not-allowed; }
+
+.nt-form, .nt-monform {
+    background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: var(--radius, 8px);
+    padding: 14px; margin-bottom: 14px;
+}
+.nt-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px 14px; }
+.nt-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.nt-field.is-wide { grid-column: 1 / -1; }
+.nt-field > span { font-size: .85em; color: var(--text-muted); }
+.nt-field input[type=text], .nt-field input[type=number], .nt-field select {
+    width: 100%; box-sizing: border-box; padding: 6px 8px;
+    background: var(--bg-input, var(--bg-elev)); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-small, 5px); font: inherit;
+}
+.nt-field input::placeholder { color: var(--text-muted); font-style: italic; opacity: .8; }
+.nt-field.is-check { flex-direction: row; align-items: center; gap: 8px; padding-top: 18px; }
+.nt-field.is-check > span { font-size: .9em; color: var(--text); }
+.nt-field input[type=checkbox] { accent-color: var(--accent); }
+.nt-actions { display: flex; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+
+.nt-warn {
+    border-left: 3px solid var(--nt-warn); background: var(--status-warning-bg, rgba(183,121,31,.1));
+    padding: 8px 12px; margin-bottom: 12px; border-radius: var(--radius-small, 5px); line-height: 1.45;
+}
+
+/* ── Résultat ── */
+.nt-result {
+    border: 1px solid var(--border-soft); border-radius: var(--radius, 8px); padding: 14px;
+    background: var(--bg-elev);
+}
+.nt-verdict { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 10px; }
+.nt-verdict b { font-size: 1.05em; }
+.nt-ok { color: var(--nt-ok); }
+.nt-ko { color: var(--nt-ko); }
+.nt-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--text-muted); }
+.nt-dot.is-up { background: var(--nt-ok); }
+.nt-dot.is-down { background: var(--nt-ko); }
+.nt-dot.is-paused { background: transparent; border: 2px solid var(--text-muted); width: 6px; height: 6px; }
+
+.nt-stats { display: flex; gap: 22px; flex-wrap: wrap; margin: 6px 0 12px; }
+.nt-stat { display: flex; flex-direction: column; }
+.nt-stat > span { font-size: .8em; color: var(--text-muted); }
+.nt-stat > b { font-variant-numeric: tabular-nums; font-size: 1.15em; }
+
+.nt-table { width: 100%; border-collapse: collapse; }
+.nt-table th, .nt-table td { padding: 6px 10px; text-align: left; vertical-align: middle; }
+.nt-table th { font-size: .82em; color: var(--text-muted); font-weight: 600; }
+.nt-table tbody tr { border-top: 1px solid var(--border-soft); }
+.nt-table td.num, .nt-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.nt-table tr.is-click { cursor: pointer; }
+.nt-table tr.is-click:hover { background: var(--bg-hover); }
+.nt-table tr.nt-detail-row > td { background: var(--bg-soft); padding: 12px; }
+.nt-kv td:first-child { color: var(--text-muted); width: 1%; white-space: nowrap; }
+.nt-wrapcell { word-break: break-all; }
+.nt-muted { color: var(--text-muted); }
+.nt-raw { margin-top: 12px; }
+.nt-raw summary { cursor: pointer; color: var(--text-muted); font-size: .85em; }
+.nt-raw pre {
+    max-height: 340px; overflow: auto; font-family: var(--font-mono); font-size: .82em;
+    background: var(--bg-soft); padding: 10px; border-radius: var(--radius-small, 5px);
+}
+.nt-result-actions { margin-top: 12px; display: flex; gap: 8px; }
+
+/* Barres d'aller-retour (ping) : chaque paquet, pas seulement la moyenne. */
+.nt-bars { display: flex; align-items: flex-end; gap: 2px; height: 46px; margin: 4px 0 10px; }
+.nt-bars > i { flex: 1 1 0; max-width: 18px; min-height: 2px; background: var(--nt-ok); border-radius: 2px 2px 0 0; }
+.nt-bars > i.is-lost { background: var(--nt-ko); height: 100% !important; opacity: .35; }
+
+/* ── Surveillance ── */
+.nt-bar { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
+.nt-bar .meta { margin: 0; flex: 1 1 320px; }
+.nt-strip { display: flex; gap: 1px; height: 14px; align-items: stretch; }
+.nt-strip > i { width: 4px; background: var(--nt-ok); border-radius: 1px; }
+.nt-strip > i.is-ko { background: var(--nt-ko); }
+.nt-rowact { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: nowrap; }
+.nt-monform h3 { margin: 0 0 10px; font-size: 1em; }
+.nt-sep { grid-column: 1 / -1; border-top: 1px dashed var(--border-soft); margin: 4px 0; }
+
+@media (max-width: 720px) {
+    .nt-table thead { display: none; }
+    .nt-table td { display: block; padding: 3px 8px; }
+    .nt-table tbody tr { display: block; padding: 6px 0; }
+}

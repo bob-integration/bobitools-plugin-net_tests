@@ -1,0 +1,18 @@
+{
+ "date": "2026-10-01",
+ "changes": {
+  "Nouveautés": [
+   "v0.1.0 — Première version. Diagnostic réseau DEPUIS LE SERVEUR (runtime in-process : c'est le point de vue de l'hôte qu'on mesure, multicast compris). Huit sondes rendant des données structurées, jamais du texte de commande à relire : ping (chaque paquet, perte, gigue), traceroute ICMP, ports TCP (refusé distingué de filtré), certificat TLS (jours restants, et séparément : la chaîne serait-elle acceptée), HTTP en lecture seule, DNS avec résolveur au choix, écoute multicast avec choix de l'interface, balayage de plage jusqu'à un /22. Chaque test est borné à 120 s dans le pire cas, refusé AVANT de partir au-delà, calcul à l'appui.",
+   "v0.1.0 — CIBLES DES INVENTAIRES : le champ cible propose les switchs de « Pilotage de switch » et les équipements de « Parc NMOS », lus en lecture seule dans leurs volumes. Seuls le nom, l'adresse et le lieu sont repris — switches.json porte aussi des identifiants de connexion, qui ne sortent jamais de l'outil. park.json est lu selon son contrat versionné : une version inconnue est refusée et signalée, pas lue au mieux.",
+   "v0.1.0 — SURVEILLANCE : contrôles planifiés (ping, TCP, HTTP, DNS, TLS) exécutés par le serveur, alerte au journal et par e-mail au PASSAGE en échec après N échecs consécutifs, et au retour. Bornée parce qu'elle vit dans le processus de l'app, à côté du provider Ember+ : 50 contrôles, 10 s d'intervalle minimum, 4 en parallèle, 30 s de durée maximum par contrôle. Le planificateur survit au rechargement des plugins (un seul par processus) et ne tourne jamais dans un outil en ligne de commande.",
+   "v0.1.0 — HISTORIQUE des 200 derniers tests, partagé, avec l'auteur ; un clic déplie le résultat complet. DROITS FINS : balayage et multicast réservés aux administrateurs par défaut, gestion de la surveillance et purge de l'historique aux opérateurs.",
+   "v0.1.0 — Deux défauts de la bibliothèque de sondes corrigés avant publication. (1) L'identifiant ICMP venait du PID : tous les pings simultanés d'un même processus le partageaient et la réponse n'était pas rapprochée de l'adresse visée. Mesuré sur 10.1.10.240/28 : l'ancien balayage déclarait 14 hôtes vivants sur 14, il y en a 2. Identifiant désormais unique par appel, et un écho ne compte que s'il vient de la cible. (2) La résolution inverse posait `socket.setdefaulttimeout`, réglage GLOBAL au processus : en in-process, il aurait changé le délai de toutes les sockets de l'app, provider Ember+ compris."
+  ],
+  "Bugs connus": [
+   "Multicast en ASM (any-source) seulement : pas de jonction SSM (S,G). Sur un réseau qui n'accepte que le SSM, l'écoute ne reçoit rien.",
+   "IPv4 seulement pour le balayage et le multicast.",
+   "Le premier verdict d'un contrôle neuf (« inconnu » → succès ou échec) n'envoie pas d'alerte."
+  ],
+  "Correctifs": []
+ }
+}
